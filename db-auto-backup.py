@@ -4,6 +4,7 @@ import os
 import sys
 from io import StringIO
 from pathlib import Path
+import time
 from typing import Callable, Dict, Optional, Sequence
 
 import docker
@@ -65,13 +66,21 @@ def get_backup_method(container_names: Sequence[str]) -> Optional[BackupCandidat
 def backup() -> None:
     docker_client = docker.from_env()
 
-    backed_up_containers = []
+    detailedReport = os.environ.get("DETAILED_REPORT", 'false').lower().strip() == "true"
+
+    report = []
+
+    if healthchecks_id := os.environ.get("HEALTHCHECKS_ID"):
+        healthchecks_host = os.environ.get("HEALTHCHECKS_HOST", "hc-ping.com")
+        requests.post(f"https://{healthchecks_host}/{healthchecks_id}/start").raise_for_status()
 
     for container in docker_client.containers.list():
         container_names = [tag.rsplit(":", 1)[0] for tag in container.image.tags]
         backup_method = get_backup_method(container_names)
         if backup_method is None:
             continue
+
+        start = time.time()
 
         backup_command = backup_method(container)
         backup_file = BACKUP_DIR / f"{container.name}.sql"
@@ -88,16 +97,21 @@ def backup() -> None:
                     continue
                 f.write(stdout)
 
+        end = time.time()
+
         if not SHOW_PROGRESS:
             print(container.name)
 
-        backed_up_containers.append(container.name)
+        if detailedReport:
+            report.append(f"[FINISHED] {container.name} after {end - start:.1}s")
+        else:
+            report.append(container.name)
 
     if healthchecks_id := os.environ.get("HEALTHCHECKS_ID"):
         healthchecks_host = os.environ.get("HEALTHCHECKS_HOST", "hc-ping.com")
         requests.post(
             f"https://{healthchecks_host}/{healthchecks_id}",
-            data="\n".join(backed_up_containers),
+            data="\n".join(report),
         ).raise_for_status()
 
 
